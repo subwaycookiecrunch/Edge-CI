@@ -1,0 +1,204 @@
+# EdgeCI pull-request template for a trusted self-hosted Apple Silicon runner.
+#
+# SECURITY: pull_request code executes on the self-hosted Mac. Do not expose
+# this runner to untrusted public forks. Use runner groups and repository policy
+# to restrict which repositories and contributors may target it.
+#
+# Required repository setup:
+#   1. Actions variable EDGECI_MODEL_PATH points to a local GGUF on the Mac.
+#   2. Actions variable EDGECI_WHEELHOUSE points to a runner-owned, read-only
+#      directory containing reviewed EdgeCI 0.1.0, click, rich, and transitive
+#      dependency wheels for fully offline installation.
+#   3. A reviewed .edgeci.toml exists on the protected base branch.
+#   4. Python 3, CMake, Ninja, and compiler tooling are installed on the Mac.
+#   5. Environment edgeci-approved has required trusted reviewers.
+#   6. Runner group access is restricted to this repository/workflow, and the
+#      self-hosted Actions runner is version 2.329.0 or newer.
+
+name: EdgeCI performance gate
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: edgeci-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  benchmark:
+    name: Paired Apple Silicon benchmark
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, macOS, ARM64, edgeci]
+    environment: edgeci-approved
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    env:
+      MODEL_PATH: ${{ vars.EDGECI_MODEL_PATH }}
+      EDGECI_WHEELHOUSE: ${{ vars.EDGECI_WHEELHOUSE }}
+
+    steps:
+      - name: Validate runner configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$MODEL_PATH"
+          test -f "$MODEL_PATH"
+          test -n "$EDGECI_WHEELHOUSE"
+          test -d "$EDGECI_WHEELHOUSE"
+
+      - name: Check out base revision
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Check out head revision
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: head
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Build base llama-bench
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S base -B build/base -G Ninja \
+            -DGGML_METAL=ON \
+            -DLLAMA_BUILD_TESTS=OFF \
+            -DLLAMA_BUILD_EXAMPLES=ON \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build build/base --target llama-bench \
+            --parallel "$(sysctl -n hw.perflevel0.logicalcpu)"
+
+      - name: Build head llama-bench
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S head -B build/head -G Ninja \
+            -DGGML_METAL=ON \
+            -DLLAMA_BUILD_TESTS=OFF \
+            -DLLAMA_BUILD_EXAMPLES=ON \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build build/head --target llama-bench \
+            --parallel "$(sysctl -n hw.perflevel0.logicalcpu)"
+
+      - name: Install EdgeCI
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv .edgeci-venv
+          .edgeci-venv/bin/python -m pip install \
+            --disable-pip-version-check \
+            --no-index \
+            --find-links "$EDGECI_WHEELHOUSE" \
+            edgeci==0.1.0
+
+      - name: Run paired comparison
+        id: edgeci
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/edgeci-results"
+          set +e
+          .edgeci-venv/bin/edgeci compare \
+            --base "$GITHUB_WORKSPACE/build/base/bin/llama-bench" \
+            --head "$GITHUB_WORKSPACE/build/head/bin/llama-bench" \
+            --model "$MODEL_PATH" \
+            --config "$GITHUB_WORKSPACE/base/.edgeci.toml" \
+            --output "$GITHUB_WORKSPACE/edgeci-results" \
+            --format all \
+            --seed "${{ github.event.pull_request.number }}-${{ github.run_attempt }}"
+          edgeci_status=$?
+          set -e
+          printf '%s\n' "$edgeci_status" > edgeci-results/exit-code.txt
+          if [[ ! -f edgeci-results/report.md ]]; then
+            {
+              printf '## EdgeCI — ⚪ inconclusive\n\n'
+              printf 'EdgeCI stopped before producing a full report (exit code `%s`).\n' "$edgeci_status"
+            } > edgeci-results/report.md
+          fi
+          exit 0
+
+      - name: Upload EdgeCI evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: edgeci-result-${{ github.run_id }}-${{ github.run_attempt }}
+          path: edgeci-results/
+          if-no-files-found: error
+          retention-days: 14
+
+  report:
+    name: Publish EdgeCI result
+    needs: benchmark
+    if: always() && needs.benchmark.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Download EdgeCI evidence
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: edgeci-result-${{ github.run_id }}-${{ github.run_attempt }}
+          path: edgeci-result
+
+      - name: Post pull-request comment
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- edgeci-report -->';
+            const report = fs.readFileSync('edgeci-result/report.md', 'utf8');
+            const body = `${marker}\n${report}`;
+            const comments = await github.paginate(
+              github.rest.issues.listComments,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                per_page: 100,
+              },
+            );
+            const existing = comments.find((comment) =>
+              comment.user?.login === 'github-actions[bot]' &&
+              comment.body?.includes(marker)
+            );
+            const request = {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body,
+            };
+            if (existing) {
+              await github.rest.issues.updateComment({
+                ...request,
+                comment_id: existing.id,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                ...request,
+                issue_number: context.issue.number,
+              });
+            }
+
+      - name: Apply EdgeCI exit status
+        shell: bash
+        run: |
+          set -euo pipefail
+          status="$(cat edgeci-result/exit-code.txt)"
+          case "$status" in
+            0) exit 0 ;;
+            1) echo "EdgeCI detected a regression"; exit 1 ;;
+            2) echo "EdgeCI result was inconclusive"; exit 2 ;;
+            *) echo "Unexpected EdgeCI exit status: $status"; exit 2 ;;
+          esac

@@ -1,0 +1,49 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "edgeci"
+version = "0.1.0"
+description = "Performance release gate for on-device AI inference on Apple Silicon"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "subwaycookiecrunch" }]
+keywords = ["apple-silicon", "benchmark", "llama.cpp", "performance", "release-gate"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: MacOS :: MacOS X",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development :: Testing",
+]
+dependencies = [
+  "click>=8.1",
+  "rich>=13.0",
+  "tomli>=2.0; python_version < '3.11'",
+]
+
+[project.urls]
+Homepage = "https://github.com/subwaycookiecrunch/Edge-CI"
+Repository = "https://github.com/subwaycookiecrunch/Edge-CI"
+Issues = "https://github.com/subwaycookiecrunch/Edge-CI/issues"
+
+[project.optional-dependencies]
+test = ["pytest>=8.0"]
+
+[project.scripts]
+edgeci = "edgeci.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/edgeci"]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]
+

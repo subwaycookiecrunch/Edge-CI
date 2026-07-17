@@ -1,0 +1,58 @@
+# EdgeCI configuration example.
+#
+# Save as .edgeci.toml in the repository root. EdgeCI searches the current
+# directory and its parents. CLI options override values in this file.
+
+[model]
+# Required unless every command receives --model. EdgeCI never downloads models.
+# Prefer an absolute path so local and self-hosted runner execution are unambiguous.
+path = "/absolute/path/to/model.gguf"
+
+[benchmark]
+# Prompt-processing workload. Reported as pp512 with this value.
+prompt_tokens = 512
+
+# Token-generation workload. Reported as tg128 with this value.
+generate_tokens = 128
+
+# Number of measured base/head pairs. Default protocol uses 20 pairs arranged
+# as 10 balanced ABBA/BAAB blocks.
+pairs = 20
+
+# Base/head pairs run before measurement and discarded from analysis.
+warmup_pairs = 2
+
+# Quiet time between llama-bench process invocations, in seconds.
+gap_seconds = 15
+
+# Hard deadline for the complete comparison, in minutes.
+timeout_minutes = 60
+
+[budgets]
+# Maximum tolerated generation-throughput regression as a fraction.
+# 0.05 means head may be at most 5% slower than base under the protocol.
+tg = 0.05
+
+# Maximum tolerated prompt-processing throughput regression as a fraction.
+pp = 0.05
+
+[preflight]
+# Continuous nominal thermal time required before measurement, in seconds.
+# Any non-nominal reading resets this timer.
+thermal_settle_seconds = 60
+
+# Maximum CPU busy fraction before start. 0.20 means less than 20% busy.
+idle_cpu_threshold = 0.20
+
+# Minimum cooldown after build activity before preflight, in seconds.
+post_build_cooldown = 120
+
+# Maximum time spent waiting for all preflight conditions, in seconds.
+preflight_timeout = 600
+
+[report]
+# terminal, markdown, json, or all.
+format = "all"
+
+# Destination for result.json, report.md, and schedule.json.
+output_dir = "./edgeci-results"
